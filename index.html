@@ -312,10 +312,13 @@ function startFormation() {
 const state = {};
 modules.forEach((m, i) => {
   state[m.num] = {
-    currentQ: 0,       // index question active
-    correctCount: 0,   // nb bonnes réponses
-    done: false,       // module terminé
-    unlocked: i === 0  // seul module 01 ouvert au départ
+    currentQ: 0,
+    correctCount: 0,
+    answeredCount: 0,
+    done: false,
+    unlocked: i === 0,
+    questions: [...m.questions],
+    failed: []
   };
 });
 
@@ -378,32 +381,30 @@ function buildQuiz() {
 
 // ---- AFFICHAGE QUESTION COURANTE ----
 function renderCurrentQuestion(moduleNum) {
-  const m = modules.find(x => x.num === moduleNum);
   const s = state[moduleNum];
   const area = document.getElementById(`qarea-${moduleNum}`);
-
-  if (s.done) return; // module terminé, ne rien re-rendre
+  if (s.done) return;
 
   const qi = s.currentQ;
-  const q = m.questions[qi];
-  const qid = `${moduleNum}-${qi}`;
+  const q = s.questions[qi];
+  const qid = `${moduleNum}-${qi}-${qi}`;
+  const isLast = (qi >= s.questions.length - 1) && s.failed.length === 0;
 
   area.innerHTML = `
     <div class="q-card">
-      <div class="q-num">QUESTION ${qi + 1} / 5</div>
+      <div class="q-num">QUESTION ${qi + 1}</div>
       <div class="q-text">${q.q}</div>
       <div class="options" id="opts-${qid}">
         ${q.options.map((opt, oi) => `
-          <div class="option" id="opt-${qid}-${oi}" onclick="answer('${moduleNum}',${qi},${oi})">
+          <div class="option" onclick="answer('${moduleNum}',${qi},${oi})">
             <span class="letter">${['A','B','C','D'][oi]}</span>
             <span>${opt}</span>
           </div>
         `).join('')}
       </div>
       <div class="feedback" id="fb-${qid}"></div>
-      <div class="retry-msg" id="retry-${qid}">↩ Cette réponse est incorrecte. Lisez l'explication et retrouvez la bonne réponse pour continuer.</div>
       <button class="btn-next" id="btnNext-${qid}" onclick="nextQuestion('${moduleNum}')">
-        ${qi < 4 ? 'Question suivante →' : 'Voir le résultat du module →'}
+        ${isLast ? 'Voir le résultat du module →' : 'Question suivante →'}
       </button>
     </div>
   `;
@@ -411,15 +412,12 @@ function renderCurrentQuestion(moduleNum) {
 
 // ---- RÉPONSE ----
 function answer(moduleNum, qi, oi) {
-  const m = modules.find(x => x.num === moduleNum);
-  const q = m.questions[qi];
-  const qid = `${moduleNum}-${qi}`;
-  const opts = document.querySelectorAll(`#opts-${qid} .option`);
-  const fb = document.getElementById(`fb-${qid}`);
-  const retry = document.getElementById(`retry-${qid}`);
-  const btnNext = document.getElementById(`btnNext-${qid}`);
+  const s = state[moduleNum];
+  const q = s.questions[qi];
+  const opts = document.querySelectorAll(`#opts-${moduleNum}-${qi}-${qi} .option`);
+  const fb = document.getElementById(`fb-${moduleNum}-${qi}-${qi}`);
+  const btnNext = document.getElementById(`btnNext-${moduleNum}-${qi}-${qi}`);
 
-  // Désactiver tous les clics
   opts.forEach(o => { o.classList.add('disabled'); o.onclick = null; });
 
   if (oi === q.correct) {
@@ -427,29 +425,21 @@ function answer(moduleNum, qi, oi) {
     opts[oi].classList.add('correct');
     fb.className = 'feedback correct-fb show';
     fb.innerHTML = `✅ <strong>Correct.</strong> ${q.explanation}`;
-    state[moduleNum].correctCount++;
-    document.getElementById(`score-${moduleNum}`).textContent = `${state[moduleNum].correctCount} / 5`;
-    document.getElementById(`progress-${moduleNum}`).style.width = `${((qi + 1) / 5) * 100}%`;
-
-    // Bouton suivant après délai lecture
-    setTimeout(() => { btnNext.style.display = 'inline-block'; }, 3000);
+    s.correctCount++;
+    s.answeredCount++;
+    const totalQ = s.questions.length + s.failed.length;
+    document.getElementById(`score-${moduleNum}`).textContent = `${s.correctCount} / 5`;
+    document.getElementById(`progress-${moduleNum}`).style.width = `${(s.answeredCount / Math.max(totalQ, 5)) * 100}%`;
+    setTimeout(() => { if(btnNext) btnNext.style.display = 'inline-block'; }, 3000);
 
   } else {
-    // ❌ MAUVAISE RÉPONSE — on reste bloqué, on doit réessayer
+    // ❌ MAUVAISE RÉPONSE — explication affichée, question mise de côté pour la fin
     opts[oi].classList.add('wrong');
     fb.className = 'feedback wrong-fb show';
-    fb.innerHTML = `❌ <strong>Incorrect.</strong> ${q.explanation}`;
-    retry.classList.add('show');
-
-    // Ré-activer les autres options après 2s pour qu'il puisse retrouver la bonne
-    setTimeout(() => {
-      opts.forEach((o, idx) => {
-        if (idx !== oi) {
-          o.classList.remove('disabled');
-          o.onclick = () => answer(moduleNum, qi, idx);
-        }
-      });
-    }, 2000);
+    fb.innerHTML = `❌ <strong>Incorrect.</strong> ${q.explanation}<br><br><em style="color:#ffd0d0">↩ Cette question reviendra à la fin du module.</em>`;
+    s.failed.push(qi);
+    s.answeredCount++;
+    setTimeout(() => { if(btnNext) btnNext.style.display = 'inline-block'; }, 3000);
   }
 }
 
@@ -457,35 +447,41 @@ function answer(moduleNum, qi, oi) {
 function nextQuestion(moduleNum) {
   const s = state[moduleNum];
   s.currentQ++;
-  saveProgress();
 
-  if (s.currentQ < 5) {
+  if (s.currentQ < s.questions.length) {
+    // Questions normales restantes
     renderCurrentQuestion(moduleNum);
     window.scrollTo({ top: 0, behavior: 'smooth' });
+
+  } else if (s.failed.length > 0) {
+    // Questions ratées à repasser
+    const failedQi = s.failed.shift();
+    const m = modules.find(x => x.num === moduleNum);
+    s.questions.push(m.questions[failedQi]);
+    renderCurrentQuestion(moduleNum);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    // Banner "question à reprendre"
+    setTimeout(() => {
+      const area = document.getElementById(`qarea-${moduleNum}`);
+      const banner = document.createElement('div');
+      banner.style.cssText = 'background:#1a2a40;border-left:4px solid #fff;padding:12px 16px;border-radius:6px;margin-bottom:16px;font-size:0.88rem;color:#fff;';
+      banner.innerHTML = '↩ <strong>Question à reprendre</strong> — vous aviez répondu incorrectement à cette question.';
+      area.insertBefore(banner, area.firstChild);
+    }, 50);
+
   } else {
-    // Fin du module
+    // ✅ Toutes les questions maîtrisées — module terminé
     s.done = true;
+    saveProgress();
     document.getElementById(`qarea-${moduleNum}`).innerHTML = '';
     const resultEl = document.getElementById(`result-${moduleNum}`);
-    const score = s.correctCount;
-    document.getElementById(`rscore-${moduleNum}`).textContent = `${score}/5`;
-    document.getElementById(`rscore-${moduleNum}`).style.color = score === 5 ? '#14805C' : score >= 4 ? '#fff' : '#C0001A';
-    const msgs = {
-      5: "Performance optimale. Module 100% validé.",
-      4: "Très bon niveau. Module validé.",
-      3: "Niveau suffisant. Module validé.",
-      2: "Niveau insuffisant. Repassez ce module avant de continuer.",
-      1: "Niveau critique. Une révision complète est nécessaire.",
-      0: "Module non validé. Reprenez depuis le début."
-    };
-    document.getElementById(`rmsg-${moduleNum}`).textContent = msgs[score];
+    document.getElementById(`rscore-${moduleNum}`).textContent = `5/5`;
+    document.getElementById(`rscore-${moduleNum}`).style.color = '#14805C';
+    document.getElementById(`rmsg-${moduleNum}`).textContent = "Toutes les questions sont maîtrisées. Module validé ✓";
     resultEl.classList.add('show');
     resultEl.querySelector('.btn-next').style.display = 'inline-block';
-
-    saveProgress();
     const navBtn = document.getElementById(`nav-${moduleNum}`);
     if (navBtn) navBtn.classList.add('completed');
-
     setTimeout(() => { resultEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 200);
   }
 }
